@@ -1,5 +1,5 @@
 # pyCOMET
-Python implementation of the COMET subtyping tool. The orginal implementation of COMET algorithm can be found in Struck *et al.* paper [here](https://www.ncbi.nlm.nih.gov/pubmed/25120265).
+Python implementation of the COMET subtyping tool. The original implementation of COMET algorithm can be found in Struck *et al.* paper [here](https://www.ncbi.nlm.nih.gov/pubmed/25120265).
 
 ## Training
 
