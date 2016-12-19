@@ -106,6 +106,7 @@ def predict(c, ctx, s, conList,pTable,bitList):
         predict(c, ctx[1:], s-1, conList, pTable,bitList)
 #******************************************************************************
 
+#******************************************************************************
 def loadModels(mFile):
     '''
         Loads the model definitions into the ppmd list
@@ -157,6 +158,7 @@ def loadModels(mFile):
                 #print(ppmd[0]['table'][1]) 
     
     #print(ppmd[0]['table'][1])            
+#****************************************************
 
 ##***************************************************
 def challangeType(sLike,target,start,end):
@@ -179,7 +181,7 @@ def challangeType(sLike,target,start,end):
             return False
         
     return True
-        
+#***********************************************        
     
 ##**********************************************
 def check_subtype(sLike,seqId):
@@ -332,7 +334,7 @@ def subtype_calling(query):
     '''
     seqs = list(SeqIO.parse(query,'fasta'))
     
-    for i in range(len(seqs)):  #len(seqs)
+    for i in range(5):  #len(seqs)
         #print('id:',seqs[i].id)
         
         msg = str(seqs[i].seq).upper()
@@ -342,6 +344,41 @@ def subtype_calling(query):
         
 ##******************************************    
 
+#*******************************************
+def deAlign(iFile, dFile):
+    '''
+      - Removes gaps (if any) from the input sequence file
+    ''' 
+  
+    #print("\nRemoving the gap characters '-'/'.' from the sequences")
+  
+    # Reading sequence file in fasta format
+    seqs = list(SeqIO.parse(iFile,'fasta'))
+  
+    if len(seqs) >= 1: # at least one sequence present | file is in FASTA format
+  
+        st = ''
+  
+        for seq in seqs:
+          st += '>' + seq.id + '\n' + str(seq.seq).replace('-','').replace('.','') + '\n'
+  
+        fh = open(dFile,'w')
+        fh.write(st)
+        fh.close()
+  
+        msg = '[' + time.strftime('%d %b %H:%M:%S') + ']'
+        msg += ' Gapless query sequence file written in <%s>\n' % dFile
+        print(msg)
+  
+    else: # no sequence present or wrong format
+        msg = '\n\nError: Could not read the input sequence file.'
+        msg += '\n       Make sure the file is in FASTA format'
+        msg += '\n       and at least one sequnce present in file\n'
+        sys.exit(msg) 
+
+#******************************************************************************
+
+#******************************************************************************
 def getArguments():
     '''
         Parse all the command line arguments from the user
@@ -359,6 +396,7 @@ def getArguments():
     
 ##********************************************************##
 
+##********************************************************##
 if __name__=="__main__":
     args = getArguments()
 
@@ -373,7 +411,9 @@ if __name__=="__main__":
     loadModels(args.modelFile)
     #print(ppmd[0]['table'][0:3])
     
+    ## Dealign the query sequence
+    deAlign(args.query,'query.dealign.fas')
     ## subtype calling
-    subtype_calling(args.query)
+    subtype_calling('query.dealign.fas')
     
 ##***************************************************

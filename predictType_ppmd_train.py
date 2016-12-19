@@ -51,7 +51,41 @@ def update(c, ctx):
 
 #*******************************************************
 
+#*******************************************************
+def deAlign(iFile, dFile):
+    '''
+      - Removes gaps (if any) from the input sequence file
+    ''' 
+  
+    #print("\nRemoving the gap characters '-'/'.' from the sequences")
+  
+    # Reading sequence file in fasta format
+    seqs = list(SeqIO.parse(iFile,'fasta'))
+  
+    if len(seqs) >= 1: # at least one sequence present | file is in FASTA format
+  
+        st = ''
+  
+        for seq in seqs:
+          st += '>' + seq.id + '\n' + str(seq.seq).replace('-','').replace('.','') + '\n'
+  
+        fh = open(dFile,'w')
+        fh.write(st)
+        fh.close()
+  
+        msg = '[' + time.strftime('%d %b %H:%M:%S') + ']'
+        msg += ' Gapless reference sequence file written in <%s>\n' % dFile
+        print(msg)
+  
+    else: # no sequence present or wrong format
+        msg = '\n\nError: Could not read the input sequence file.'
+        msg += '\n       Make sure the file is in FASTA format'
+        msg += '\n       and at least one sequnce present in file\n'
+        sys.exit(msg) 
+
 ##********************************************************##
+
+#***********************************************************
 def getArguments():
     '''
         Parse all the command line arguments from the user
@@ -69,6 +103,7 @@ def getArguments():
     
 ##********************************************************##
 
+#***********************************************************
 if __name__=="__main__":
     args = getArguments()
     
@@ -83,8 +118,10 @@ if __name__=="__main__":
     ## define the digits list
     digits = list('0123456789')
     
-    ## read the reference sequence file
-    seqs = list(SeqIO.parse(args.reference,'fasta'))
+    deAlign(args.reference,'reference.dealign.fas')
+
+    ## read the dealigned reference sequence file
+    seqs = list(SeqIO.parse('reference.dealign.fas','fasta'))
     
     ## create a dictionary for each of the reference sequences
     #ppmc = [dict() for i in range(len(seqs))]
