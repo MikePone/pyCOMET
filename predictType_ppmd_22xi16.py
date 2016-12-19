@@ -334,7 +334,7 @@ def subtype_calling(query):
     '''
     seqs = list(SeqIO.parse(query,'fasta'))
     
-    for i in range(5):  #len(seqs)
+    for i in range(len(seqs)):  #len(seqs)
         #print('id:',seqs[i].id)
         
         msg = str(seqs[i].seq).upper()
