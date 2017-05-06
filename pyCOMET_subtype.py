@@ -2,22 +2,24 @@
 
 '''
     pyCOMET_subtype.py
-    
+
     a python3 based program to use PPMD models for subtype classification
-     
+
     The program takes as input the following:
         - a model description file in msgpack format
         - a fixed context size
-    
-    This model gives log likelihoods of the probablities of seeing a residue at 
+
+    This model gives log likelihoods of the probablities of seeing a residue at
     a particular position given the context
-    
+
     These likelihoods then can be used to predict the subtype
 '''
 
 import math, os, sys, argparse, time
 import umsgpack
+import json
 from Bio import SeqIO
+import numpy as np
 
 ##********************************************************##
 def contextThreshold(x):
@@ -25,271 +27,273 @@ def contextThreshold(x):
         x = int(x)
     except ValueError as e:
         sys.exit(e)
-    
+
     if x <= 0:
-        raise argparse.ArgumentTypeError('%r must be a positive integer' % (x,)) 
-    
-    return x   
+        raise argparse.ArgumentTypeError('%r must be a positive integer' % (x,))
+
+    return x
 #*******************************************************
 
 #*******************************************************
-# This is a function implementing recursion
-def predictLikelihood(c,ctx,cLen,conList,sType,bitList):
-    '''
-    predictLikelihood() returns the log likelihood values of predicting a nucleotide given a context
-    argument list:
-        c - nucleotide
-        ctx - current context
-        cLen - length of the context
-        conList - list of nucleotides matched for the previous longer context
-        sType - subtype in 'loaded_subtype' for which likelihood is calculated
-        bitList - list of log likelihood values for all the context sizes
-    '''
-    # cLen == -1 means no match was found in any context
-    # returns with likelihood values
-    if cLen == -1:
-        return
+def getNonRedundantListOrder(lst):
+    seen = set()
+    seen_add = seen.add
+    return [x for x in lst if not (x in seen or seen_add(x))]
+#*******************************************************
     
-    # if the context is not present in the PPMD model for the subtype
-    # recursively call predict with the smaller context
-    # does not assign any likelihood
-    if ctx not in ppmd_models[sType][cLen]:
-        predictLikelihood(c,ctx[1:],cLen-1,[],sType,bitList)
+#*******************************************************    
+def pLike(c,ctx,cLen,sType,pScore=0.0):
     
-    # if context present in the PPMD model for sType
-    else:
-        # copy the dictionary of the current context for the subtype
-        cContext = ppmd_models[sType][cLen][ctx].copy()
+    conList = [] # holds exclusion kmers
+    kSize = cLen # current value for k
+    for z in range(cLen+1):
+        cCtx = ctx[z:] 
         
-        # create variable to hold the count for nucleotides matched 
-        # in the previous context for exclusion
-        exclusion = 0
+        if cCtx not in ppmd_models[sType][kSize]:
+            pass
         
-        
-        # find total count of the nucleotides followed by the previous context
-        # conList contains the nucleotides present in the previous context
-        for key in conList:
-            if key in cContext:
-                exclusion += cContext[key]
-        
-        # we need to calculate the escape count
-        # in PPMD escape count is = number of nucleotides / 2
-        escape = len(cContext.keys()) / 2
-        
-        # We need the total count of nucleotides for probability calculation
-        cSum = sum(cContext.values())
-        
-        # calculate probability if nucleutide follows the current context
-        if c in cContext:
-            # prob = count_of_c / (sum_of_count + escape - exclusion)
-            try:
-                prob = float(cContext[c]) / (cSum + escape - exclusion)
-            except ZeroDivisionError as e:
-                sys.exit(e)
+        else: # k-mer present in the model
+            exclusion = 0
+            for kmer in conList:
+                if kmer in ppmd_models[sType][kSize][cCtx]:
+                    exclusion += ppmd_models[sType][kSize][cCtx][kmer]
+
             
-            # calculate the log likelihood and append to bitList
-            bitList.append(math.log(prob))
-            # return to the calling function
-            return
-        
-        else:
-            # if 'c' does not follow the current context
-            # call predictLikelihood() with the smaller context
-            # we need to find the exclusion characters to be passed on to the smaller context
-            exc = list(cContext.keys())
-        
-            # log likelihood of 'escape' will be added to bitList
-            try:
-                prob = float(escape) / float(cSum + escape - exclusion)
-            except ValueError as e:
-                sys.exit(e)
-            bitList.append(math.log(prob))
-        
-            # call predictLikelihood()
-            predictLikelihood(c,ctx[1:],cLen-1,exc,sType,bitList)
-
-#***************************************************
-
-#****************************************************
-def challangeType(sLike,target,start,end):
-    '''
-        calculates sum of log likelihood for each reference in the window
-        if other - PS > 28 for all others returns 'True', else returns 'False'
-    '''
-    
-    psLike = sLike[target][start:end]
-    
-    for i in range(len(sLike)):
-        #if ppmd[i]['type'] == ppmd[target]['type']:
-            #continue
-        oLike = sLike[i][start:end]
+            sumCount = sum(ppmd_models[sType][kSize][cCtx].values())
+            
+            if c in ppmd_models[sType][kSize][cCtx]:
+                try:
+                    prob = float(ppmd_models[sType][kSize][cCtx][c]) / (sumCount - exclusion)
+                    pScore += math.log10(prob)
+                    #print(prob,pScore)
+                    return pScore
+                except (ZeroDivisionError, ValueError) as e:
+                    sys.exit(e)
+            else:
+                conList = list(ppmd_models[sType][kSize][cCtx].keys())
+                conList.remove('esc')
                 
-        diff = sum(oLike) - sum(psLike)
-        
-        if diff > 28:
-            #print('challenge: false', i, target, diff)
-            return False
-        
-    return True
-#****************************************************
+                escape = ppmd_models[sType][kSize][cCtx]['esc']
+                
+                try:
+                    prob = float(escape) / (sumCount - exclusion)
+                    pScore += math.log10(prob)
+                except (ZeroDivisionError, ValueError) as e:
+                    sys.exit(e)
+                
+        kSize -= 1
+    
+    return pScore
+
+#*******************************************************
+
+#*******************************************************
+def challenge(sLike,target,nSubtypes,start,end,thr):
+    '''This function computes the sum of likelihoods for each subtypes 
+    in the given window and finds the most likely subtype 
+    '''
+    
+    # get the sum of likelihoods for each subtypes
+    #sumLL = [sum(sLike[i][start:end])for i in range(nSubtypes)]
+    sumLL = np.sum(sLike[:,start:end],axis=1)
+    
+    # find the maximum likelihood and index
+    #maxLL = max(sumLL)
+    maxLL = np.amax(sumLL)
+    
+    #maxIndex = sumLL.index(maxLL)
+    maxIndex = np.argmax(sumLL)
+
+    # return best matching subtype according to COMET's decision tree
+    if (maxLL - sumLL[target]) <= 28:
+        return target
+    else:
+        return maxIndex
+#*******************************************************
 
 #****************************************************
-def check_subtype(sLike,seqId,args):
+def check_subtype(sLike,seqId,subtypes,nSubtypes,qLen,pIndex,args):
     '''
         Uses COMET's desition tree to call subtypes for a query
+            sLike: likelihood matrix
+            seqID: sequence identifier
+            subtypes: list of subtype names
+            nSubtypes: number of reference subtypes
+            qLen: length of the query sequence
+            args: command line arguments
+        
     '''
-    # get the number of reference subtypes
-    # and the size of the likelihood array
-    numRef = len(sLike)
-    numSites = len(sLike[0])
+    thr = 28
+    # get the sum of likelihoods for all subtypes
+    #sumLL = [sum(sLike[i]) for i in range(nSubtypes)]
+    sumLL = np.sum(sLike,axis=1)
+    #print(sumLL)
+
+    # find the index of most likely subtype PURE/CRF
+    #maxS = max(sumLL)
+    maxS = np.amax(sumLL)
     
-    S = None # holds the index for most likely subtype
-    PS = None # holds the index for most likely PURE subtype
+    #S = sumLL.index(maxS)
+    S = np.argmax(sumLL)
     
-    sll = None # holds the minimum likelihood for S
-    psll = None # holds the minimum likelihood for PS 
+    # find the most likely PURE subtype
+    #maxPS = max(sumLL[pIndex:])
+    maxPS = np.amax(sumLL[pIndex:])
+    #PS = (sumLL[pIndex:].index(maxPS)) + pIndex
+    PS = np.argmax(sumLL[pIndex:]) + pIndex
     
-    sFlag = False # S and PS are not the same
-    
-    ## decide S and PS
-    for i in range(numRef):
-        lsum = sum(sLike[i])
-        #print(lsum)
-        
-        if not sll: # sll yet to define
-            sll = lsum
-            S = i
-        elif sll < lsum: # better match found
-            sll = lsum
-            S = i     
-        
-        if loaded_subtypes[i][0] not in digits: # reference is a PURE subtype
-            if not psll: # psll yet to define
-                psll = lsum
-                PS = i
-            elif psll < lsum:
-                psll = lsum
-                PS = i
-    
-    #print(S,sll,PS,psll) 
+    #print(subtypes[S],maxS,subtypes[PS],maxPS)
+    #return
     
     wSize = args.wSize # set window size
     bSize = args.bSize # set the step size
-    
-    # Pre-compute number of windows
-    numOfWindows = int((numSites-wSize)/bSize)+1
-    #print('numOfWindows',numOfWindows)
 
-    if S == PS:
-        ## check whether PURE subtype is best match 
-        ## in each of the windows
-        #print('Checking S', S)
-        bMatch = True
-        
-        for i in range(0,numOfWindows*bSize,bSize):
-            start = i
-            end = i + wSize
-            bMatch = challangeType(sLike,S,start,end)
-        
-            if not bMatch: # challengeType reurned False
-                return 'UNASSIGNED, true'
-        
-        if bMatch:
-            rTxt = loaded_subtypes[S] + ' (PURE)'
-            return rTxt    
+    # Pre-compute number of windows
+    numOfWindows = int((qLen-wSize)/bSize)+1
+    #print('numOfWindows',numOfWindows)
     
+    # check the PURE subtype first
+    # create a list of subtype assignment for each window
+    subAssignment = [PS]*numOfWindows
+    iWindow = 0    
+
+    # get the most likely subtype for each window
+    for i in range(0,numOfWindows*bSize,bSize):
+        start = i
+        end = i + wSize
+        #print(iWindow)
+        subAssignment[iWindow] = challenge(sLike,PS,nSubtypes,start,end,thr)
+        iWindow += 1
+        
+    
+    if S == PS:
+        assignedSubtypes = getNonRedundantListOrder(subAssignment)
+        if len(assignedSubtypes) == 1:
+            msg = seqId + '\t' + subtypes[PS] + '\t(PURE)'
+            #print(msg)
+            return msg
+        else:
+            msg = seqId + '\t' + 'unassigned_1\t' 
+            for asub in assignedSubtypes:
+                msg += subtypes[asub] + ' '
+            #print(msg)
+            return msg
     else: # S != PS
-        bMatch = True
-        for i in range(0,numOfWindows*bSize,bSize):
-            start = i
-            end = i + wSize
-            bMatch = challangeType(sLike,PS,start,end)
-            
-            if not bMatch: # challengeType returned False
-                break
-        
-        if bMatch: # 'True' found but needs to check CRF - PS(check S)
-            rTxt = loaded_subtypes[PS] + ' (check ' + loaded_subtypes[S] + ')'
-            return rTxt
-        
-        else: # needs to check CRF
-            bMatch = True
+        assignedSubtypes = getNonRedundantListOrder(subAssignment)
+        if len(assignedSubtypes) == 1:
+            msg = seqId + '\t' + subtypes[PS] + '\t(Check ' + subtypes[S] + ')'
+            #print(msg)
+            return msg
+        else: # needs checking CRF
+            subAssignment = [S]*numOfWindows
+            iWindow = 0    
+            # get the most likely subtype for each window
             for i in range(0,numOfWindows*bSize,bSize):
                 start = i
                 end = i + wSize
-                bMatch = challangeType(sLike,S,start,end)
-                
-                if not bMatch: # returns False
-                    return 'UNASSIGNED, crf'
+                #print(iWindow)
+                subAssignment[iWindow] = challenge(sLike,S,nSubtypes,start,end,thr)
+                iWindow += 1
             
-            if bMatch:
-                rTxt = loaded_subtypes[S] + ' (CRF)'
-                return rTxt
-#****************************************************
+            if len(assignedSubtypes) == 1:
+                msg = seqId + '\t' + subtypes[S] + '\t(CRF)'
+                #print(msg)
+                return msg
+            else:
+                msg = seqId + '\t' + 'unassigned_2\t' 
+                for asub in assignedSubtypes:
+                    msg += subtypes[asub] + ' '
+                #print(msg)
+                return msg
+#****************************************************            
 
 #****************************************************
-def calculateLogLikelihood(qSeq,seqId,args):
+def calculateLogLikelihood(query,subtypes,nSubtypes,pIndex,args):
     '''
         Calculates likelihood values for a sequence
     '''
+    # convert sequences into upper case and remove gaps
+    qSeq = str(query.seq).upper().replace('-','')
+    
+    
+    qLen = len(qSeq)
+
     # Create a list to hold likelihoods for all the nucleotide positions
     # each row represents likelihoods generated by each of the subtype PPMD models
-    sLike = list()
+
+    #lMatrix = [[]]*nSubtypes
+    lMatrix = np.zeros((nSubtypes,qLen))
     
-    dna = ['A','T','C','G']
+    # get the context size
     
+    cSize = int(args.context)
+
     # generate likelihoods based on each subtype models
-    for r in range(len(loaded_subtypes)): 
+    for r in range(nSubtypes):
         # 'bits' holds likelihood values of all the nucleotide positions
-        bits = list() 
+        #bits = [0.0]*qLen
+        bits = np.zeros(qLen)
         # get likelihood for all the residue positions
-        for j in range(len(qSeq)):
+        for j in range(qLen):  # qLen
             # the nucleotide at position 'j'
             c = qSeq[j]
-            # do not calculate for ambiguous characters
-            if c not in 'ATCG':
-                continue
             
+            # do not calculate for ambiguous characters
+            #if c not in dna:
+            #    continue
+
             # extract the current context
             start = j - cSize if j > cSize else 0
             ctx = qSeq[start:j]
-            
-            if len(set(dna) | set(ctx)) == 4: # no ambiguous characters
+ 
+            lctx = j-start
+
+            #if len(set(dna) | set(ctx)) == 4: # no ambiguous characters
                 # holds the likelihood values for a nucleotide site
-                # unsuccessful match with a longer context results in searching 
+                # unsuccessful match with a longer context results in searching
                 # with a smaller context hence multiple likelihood values
                 # employs the idea: log(a*b*c) = log(a)+log(b)+log(c)
-                bitList = list()
-                
-                # calls the predict function 
+                #bitList = list()
+
+                # calls the predict function
                 # returns the bitList with the likelihood values
-                predictLikelihood(c,ctx,len(ctx),[],loaded_subtypes[r],bitList)
-                
+                #predictLikelihood(c,ctx,lctx,[],loaded_subtypes[r],bitList)
+
                 # combines the probability from each context into a single likelihood
-                bits.append(sum(bitList)) 
+                #bits[j] = sum(bitList)
+            #print(c,ctx,lctx,subtypes[r])
             
+            
+            lPos = pLike(c,ctx,lctx,subtypes[r])
+            #if lPos == None:
+                #print(j,subtypes[r],c,ctx)
+            bits[j] = lPos
+            #lPos = predictLikelihood(c,ctx,lctx,[],subtypes[r],0.0)
+            #bits[j] = sum(bitList)
+
+        #break
         #print(bits)
         #print(loaded_subtypes[r],sum(bits))
-            
-        ## create a list of likelihhod values
+
+        ## create a list of likelihood values
         ## for each query based on each reference
         ## for each residue position
-        sLike.append(bits)
-            
-    #print(sLike[0][0:10])    
-    #print(len(sLike))    
-    
-    return check_subtype(sLike,seqId,args)
+        lMatrix[r] = bits
+
+    #print(sLike[0][0:10])
+    #print(len(sLike))
+
+    return check_subtype(lMatrix,query.id,subtypes,nSubtypes,qLen,pIndex,args)
 
 #****************************************************
 
-##**************************************************    
+##**************************************************
 
 def getArguments():
     '''
         Parse all the command line arguments from the user
     '''
-    
+
     parser = argparse.ArgumentParser(description='Predicts subtype of a sequence based on PPMD models trained using reference sequences', formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument('-q','--query',required=True,help='Query sequence file in FASTA format for subtype classification')
     parser.add_argument('-c','--context',type=contextThreshold,default=8,help='Context size for PPMD model (default: 8)')
@@ -297,12 +301,13 @@ def getArguments():
     parser.add_argument('-b','--bSize',type=contextThreshold,default=3,help='Step size of the windows for COMET decision tree (default: 3)')
     parser.add_argument('-m','--modelFile',required=True,help='PPMD model file for reference sequences')
     parser.add_argument('-o','--outFile',required=True,help='Output file for subtype prediction results')
+    parser.add_argument('-t','--thr',type=contextThreshold,default=28,help='Threshold difference used in decision tree (default: 28)')
 
 
     args = parser.parse_args()
-    
+
     return args
-    
+
 ##********************************************************##
 
 #***********************************************************
@@ -312,42 +317,72 @@ if __name__=="__main__":
 
     ## get context size
     cSize = int(args.context)
-        
+
     ## Create dna alphabet
-    dna = ['A','T','C','G']
-    
+    #dna = ['A','C','G','T']
+
     ## define the digits list
-    digits = list('0123456789') 
-    
+    #digits = list('0123456789')
+
     ## read in the model file and populate the ppmd list
-    fh = open(args.modelFile,'rb')
-    ppmd_models = umsgpack.load(fh)
-    fh.close()
+    #fh = open(args.modelFile,'rb')
+    #ppmd_models = umsgpack.load(fh)
+    try:
+        with open(args.modelFile,'r') as fh:
+            ppmd_models = json.load(fh)
+    except FileNotFoundError as e:
+        eMsg = '\nThe pyCOMET model file <{}> could not be found.'.format(args.modelFile)
+        eMsg += ' Please try again with correct model file name.\n'
+        print(eMsg)
+        sys.exit()
 
     ## get names of subtype present in the loaded PPMD models
-    loaded_subtypes = list(ppmd_models.keys())
-    
-    ## read in the query sequences
-    seqs = list(SeqIO.parse(args.query,'fasta'))
- 
-    ## check if query file is empty
-    if len(seqs) == 0:
-        msg = 'Query file does not have valid FASTA sequences.'
-        msg += '\nPlease run again with valid FASTA sequence file\n' 
-        sys.exit(msg)
-    
-    ## open output file for storing predicted subtypes
-    fh = open(args.outFile,'w')
-     
-    # calls calculateLogLikelihood() to generate subtypes
-    for i in range(len(seqs)):  #len(seqs)
-        # convert sequences into upper case and remove gaps
-        qSeq = str(seqs[i].seq).upper().replace('-','')
-        
-        # call likelihood function that returns a string
-        tMsg = calculateLogLikelihood(qSeq,seqs[i].id,args)
-        fh.write('{}\t{}\n'.format(seqs[i].id,tMsg))
-        #print(seqs[i].id, tMsg)
+    loaded_subtypes = sorted(list(ppmd_models.keys()))
 
-    fh.close()
+    ## Remove 'CPZ' from subtype list
+    try:
+        loaded_subtypes.remove('CPZ')
+    except:
+        pass
+
+    #print(ppmd_models['A1'][8])
+    #sys.exit(0)
+
+    nSubtypes = len(loaded_subtypes)
+    
+    # get the index of 'A1'; this marks the start index of PURE subtypes
+    pIndex = loaded_subtypes.index('A1')
+       
+    ## read in the query sequences
+    try:
+        qSeqs = list(SeqIO.parse(args.query,'fasta'))
+    except FileNotFoundError as e:
+        eMsg = '\nThe query sequence file <{}> could not be found.'.format(args.query)
+        eMsg += ' Please try again with correct sequence file name.\n'
+        print(eMsg)
+        sys.exit()
+
+    ## check if the sequences were read properly
+    if len(qSeqs) == 0:
+        msg = 'Query sequences were not read properly'
+        msg += '\nPlease run again with valid FASTA sequence file with at least one sequence\n'
+        sys.exit(msg)
+
+    ## open output file for storing predicted subtypes
+    #fh = open(args.outFile,'w')
+
+    # calls calculateLogLikelihood() to generate subtypes
+    for query in qSeqs:  #len(seqs)
+        #print(query.id,len(query.seq))
+        # calculate likelihood matrix
+        tMsg = calculateLogLikelihood(query,loaded_subtypes,nSubtypes,pIndex,args)
+        
+        print('{}'.format(tMsg))
+        
+        with open(args.outFile,'a') as fh:
+            fh.write('{}\n'.format(tMsg))
+        
+        
+        
+    #fh.close()
 #***********************************************************
