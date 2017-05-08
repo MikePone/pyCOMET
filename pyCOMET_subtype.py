@@ -105,7 +105,7 @@ def challenge(sLike,target,nSubtypes,start,end,thr):
     maxIndex = np.argmax(sumLL)
 
     # return best matching subtype according to COMET's decision tree
-    if (maxLL - sumLL[target]) <= 28:
+    if (maxLL - sumLL[target]) <= thr:
         return target
     else:
         return maxIndex
@@ -123,7 +123,7 @@ def check_subtype(sLike,seqId,subtypes,nSubtypes,qLen,pIndex,args):
             args: command line arguments
         
     '''
-    thr = 28
+    thr = args.thr
     # get the sum of likelihoods for all subtypes
     #sumLL = [sum(sLike[i]) for i in range(nSubtypes)]
     sumLL = np.sum(sLike,axis=1)
@@ -142,7 +142,9 @@ def check_subtype(sLike,seqId,subtypes,nSubtypes,qLen,pIndex,args):
     #PS = (sumLL[pIndex:].index(maxPS)) + pIndex
     PS = np.argmax(sumLL[pIndex:]) + pIndex
     
-    #print(subtypes[S],maxS,subtypes[PS],maxPS)
+    #print(seqId, subtypes[S],maxS,subtypes[PS],maxPS)
+    #with open(args.outFile,'a') as fh:
+        #fh.write('{}\t{}\t{}\t{}\t{}\n'.format(seqId, subtypes[S],maxS,subtypes[PS],maxPS)) 
     #return
     
     wSize = args.wSize # set window size
@@ -195,6 +197,7 @@ def check_subtype(sLike,seqId,subtypes,nSubtypes,qLen,pIndex,args):
                 subAssignment[iWindow] = challenge(sLike,S,nSubtypes,start,end,thr)
                 iWindow += 1
             
+            assignedSubtypes = getNonRedundantListOrder(subAssignment)
             if len(assignedSubtypes) == 1:
                 msg = seqId + '\t' + subtypes[S] + '\t(CRF)'
                 #print(msg)
@@ -248,26 +251,16 @@ def calculateLogLikelihood(query,subtypes,nSubtypes,pIndex,args):
  
             lctx = j-start
 
-            #if len(set(dna) | set(ctx)) == 4: # no ambiguous characters
-                # holds the likelihood values for a nucleotide site
-                # unsuccessful match with a longer context results in searching
-                # with a smaller context hence multiple likelihood values
-                # employs the idea: log(a*b*c) = log(a)+log(b)+log(c)
-                #bitList = list()
-
-                # calls the predict function
-                # returns the bitList with the likelihood values
-                #predictLikelihood(c,ctx,lctx,[],loaded_subtypes[r],bitList)
-
-                # combines the probability from each context into a single likelihood
-                #bits[j] = sum(bitList)
-            #print(c,ctx,lctx,subtypes[r])
-            
-            
-            lPos = pLike(c,ctx,lctx,subtypes[r])
+            # calculate likelihood for only 'ACGT'
+            if set(ctx).issubset('ACGT'):
+                lPos = pLike(c,ctx,lctx,subtypes[r])
+                bits[j] = lPos
+            #lPos = pLike(c,ctx,lctx,subtypes[r])
             #if lPos == None:
                 #print(j,subtypes[r],c,ctx)
-            bits[j] = lPos
+            
+            #bits[j] = lPos
+            
             #lPos = predictLikelihood(c,ctx,lctx,[],subtypes[r],0.0)
             #bits[j] = sum(bitList)
 
