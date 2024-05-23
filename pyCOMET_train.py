@@ -132,6 +132,9 @@ if __name__=="__main__":
     ## get the name of the reference file
     refFileName = args.reference
 
+    ## get the model name
+    modelName = args.modelFile
+
     ## create the dictionary using reference file
     refSeqs,refdict,subtypes=make_refdict(refFileName,sep=args.sep,field=int(args.field))
 
@@ -167,6 +170,6 @@ if __name__=="__main__":
             if set(context).issubset('ACGT'):
                 ppmdTrain(ch,context,sType)
     
-    with open('pycomet.model.test.json','w') as fh:
+    with open(modelName + '.json','w') as fh:
         json.dump(ppmd,fh)    
 #*************************************************************
